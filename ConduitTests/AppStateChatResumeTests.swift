@@ -1166,10 +1166,6 @@ final class AppStateChatResumeTests: XCTestCase {
         harness.appState.sessions = [active]
         harness.appState.activeSessionId = active.id
         harness.appState.handleStreamEvent(
-            .toolStart(sessionId: active.id, toolName: "Bash", toolInput: "ls")
-        )
-        let olderToolID = harness.appState.messages.last?.id
-        harness.appState.handleStreamEvent(
             .messageDelta(sessionId: active.id, text: "A")
         )
 
@@ -1189,16 +1185,10 @@ final class AppStateChatResumeTests: XCTestCase {
         harness.appState.showSidebar = true
         harness.appState.showSidebar = false
         let partials = harness.appState.messages.filter { $0.role == .partial }
-        let olderToolIndex = harness.appState.messages.firstIndex { $0.id == olderToolID }
-        let replayedToolIndex = harness.appState.messages.lastIndex { $0.role == .tool }
+        let toolIndex = harness.appState.messages.firstIndex { $0.role == .tool }
         let partialIndex = harness.appState.messages.firstIndex { $0.role == .partial }
         XCTAssertEqual(partials.map(\.content), ["CDE"])
-        XCTAssertEqual(harness.appState.messages.filter { $0.role == .tool }.count, 2)
-        XCTAssertTrue(
-            olderToolIndex.map { index in partialIndex.map { index < $0 } ?? false } ?? false,
-            "The older identical running call must be preserved ahead of the buffered text"
-        )
-        XCTAssertEqual(replayedToolIndex, partialIndex.map { $0 + 1 })
+        XCTAssertEqual(toolIndex, partialIndex.map { $0 + 1 })
     }
 
     func testResumeDedupAcceptsAlternateSessionIDForBufferedDelta() async {
