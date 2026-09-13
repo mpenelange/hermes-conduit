@@ -221,6 +221,9 @@ struct SessionRuntimeSnapshot {
     /// is not sufficient for restore: it may have fired while the app was
     /// backgrounded or disconnected.
     let pendingClarify: ClarifyActivity?
+    /// Raw authoritative approval still blocking the session. AppState adds
+    /// the enclosing runtime session id when normalizing the card.
+    let pendingApprovalPayload: [String: AnyCodable]?
 
     /// `session.resume` may include an in-flight or queued projection that is
     /// newer than the persisted database transcript. Keep that projection for
@@ -279,6 +282,7 @@ struct SessionRuntimeSnapshot {
             ?? object["approvals"]?.objectValue?["mode"]?.stringValue
         pendingClarify = object["pending_clarify"]?.objectValue
             .flatMap { MessageNormalizer.pendingClarifyActivity(from: $0) }
+        pendingApprovalPayload = object["pending_approval"]?.objectValue
         self.inflight = inflight
         self.queued = queued
     }
@@ -628,6 +632,9 @@ final class HermesClient: ObservableObject {
     /// still compressing (upstream #97948; Hermes Desktop parity:
     /// `SESSION_COMPRESS_TIMEOUT_MS = 660_000`).
     static let sessionCompressTimeout: TimeInterval = 660
+    /// Approval queue hydration is optional recovery context. It must never
+    /// hold foreground restoration behind the ordinary RPC timeout.
+    static let pendingApprovalsTimeout: TimeInterval = 3
 
     init(
         connection: HermesConnection,
@@ -1028,11 +1035,12 @@ final class HermesClient: ObservableObject {
                 snapshotObject[key] = value
             }
         }
-        // `pending_clarify` rides the resume response top level (upstream
-        // `_build_resume_payload`), mirroring how `pending_approval` is
-        // delivered; hoist it so the snapshot parser sees it.
-        if let pendingClarify = object["pending_clarify"] {
-            snapshotObject["pending_clarify"] = pendingClarify
+        // Pending decisions ride the resume response top level. Hoist both so
+        // the snapshot parser sees the same contract as session.info.
+        for key in ["pending_clarify", "pending_approval"] {
+            if let value = object[key] {
+                snapshotObject[key] = value
+            }
         }
         return SessionResumeResult(
             sessionId: resolvedId,
@@ -1292,6 +1300,21 @@ final class HermesClient: ObservableObject {
             throw HermesError.invalidResponse
         }
         return count > 0
+    }
+
+    /// Returns every unresolved approval for one live Hermes session. Current
+    /// Hermes scopes this method through `session_id`; bind payloads to that
+    /// requested identity rather than trusting optional fields inside a row.
+    func pendingApprovals(sessionId: String) async throws -> [ApprovalActivity] {
+        let result = try await rpc(
+            "approval.pending",
+            params: ["session_id": sessionId],
+            timeout: Self.pendingApprovalsTimeout
+        )
+        return (result.objectValue?["approvals"]?.arrayValue ?? []).compactMap { value in
+            guard let payload = value.objectValue else { return nil }
+            return MessageNormalizer.approvalActivity(from: payload, sessionId: sessionId)
+        }
     }
 
     func modelOptions(sessionId: String? = nil) async throws -> (model: String?, provider: String?, providers: [ProviderInfo]?) {
@@ -2420,6 +2443,9 @@ enum MessageNormalizer {
     ) -> ApprovalActivity? {
         let normalizedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedSessionId.isEmpty else { return nil }
+        let requestId = ["request_id", "requestId"]
+            .compactMap { payload[$0]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
 
         let command = ["command", "code", "text"]
             .compactMap { payload[$0]?.stringValue }
@@ -2440,6 +2466,7 @@ enum MessageNormalizer {
 
         return ApprovalActivity(
             sessionId: normalizedSessionId,
+            requestId: requestId,
             command: command,
             description: description,
             choices: uniqueChoices?.isEmpty == true ? nil : uniqueChoices,
