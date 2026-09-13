@@ -5271,7 +5271,7 @@ final class AppStateChatResumeTests: XCTestCase {
         reconnectScheduler: ChatResumeReconnectScheduler? = nil,
         reconnectExecutor: ChatResumeReconnectExecutor? = nil,
         lifecycleOperations: ChatResumeLifecycleOperations = .live,
-        sessionPresentationCache: SessionPresentationCache = .shared,
+        sessionPresentationCache: SessionPresentationCache? = nil,
         conversationIdentityIndex: ConversationIdentityIndex? = nil,
         sessionYoloStore: SessionYoloStore? = nil
     ) -> (
@@ -5305,7 +5305,8 @@ final class AppStateChatResumeTests: XCTestCase {
             reconnectScheduler: reconnectScheduler,
             reconnectExecutor: reconnectExecutor,
             chatResumeLifecycleOperations: lifecycleOperations,
-            sessionPresentationCache: sessionPresentationCache,
+            sessionPresentationCache: sessionPresentationCache
+                ?? SessionPresentationCache(defaults: defaults),
             sessionYoloStore: sessionYoloStore,
             conversationIdentityIndex: conversationIdentityIndex
         )
