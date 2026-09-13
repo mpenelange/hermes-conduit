@@ -124,8 +124,11 @@ enum AnyCodable: Codable, Equatable {
     }
 
     var intValue: Int? {
-        if case .number(let n) = self { return Int(n) }
-        return nil
+        guard case .number(let n) = self,
+              n.isFinite,
+              n >= Double(Int.min),
+              n < Double(Int.max) else { return nil }
+        return Int(n)
     }
 
     var doubleValue: Double? {
@@ -1269,11 +1272,26 @@ final class HermesClient: ObservableObject {
         return .accepted(remaining: remaining)
     }
 
-    func respondToApproval(sessionId: String, choice: String) async throws {
-        _ = try await rpc("approval.respond", params: [
+    func respondToApproval(sessionId: String, requestId: String? = nil, choice: String) async throws -> Bool {
+        var params: [String: Any] = [
             "choice": choice,
             "session_id": sessionId
-        ])
+        ]
+        if let requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestId.isEmpty {
+            params["request_id"] = requestId
+        }
+        let result = try await rpc("approval.respond", params: params)
+        // Current Hermes reports the number of queue entries resolved. Older
+        // gateways omitted the field after a successful response. A present
+        // malformed value is a protocol error, not legacy success.
+        guard let resolved = result.objectValue?["resolved"] else { return true }
+        guard let count = resolved.intValue,
+              count >= 0,
+              resolved.doubleValue.map({ $0.rounded(.towardZero) == $0 }) == true else {
+            throw HermesError.invalidResponse
+        }
+        return count > 0
     }
 
     func modelOptions(sessionId: String? = nil) async throws -> (model: String?, provider: String?, providers: [ProviderInfo]?) {

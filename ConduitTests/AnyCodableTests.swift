@@ -160,6 +160,16 @@ final class AnyCodableTests: XCTestCase {
         XCTAssertNil(AnyCodable.string("42").intValue)
     }
 
+    func testIntValueRejectsNonFiniteAndOutOfRangeNumbersWithoutTrapping() {
+        XCTAssertEqual(AnyCodable.number(Double(Int.min)).intValue, Int.min)
+        XCTAssertNil(AnyCodable.number(Double(Int.max)).intValue)
+        XCTAssertNil(AnyCodable.number(1e100).intValue)
+        XCTAssertNil(AnyCodable.number(-1e100).intValue)
+        XCTAssertNil(AnyCodable.number(.infinity).intValue)
+        XCTAssertNil(AnyCodable.number(-.infinity).intValue)
+        XCTAssertNil(AnyCodable.number(.nan).intValue)
+    }
+
     func testBoolValue() {
         XCTAssertEqual(AnyCodable.bool(true).boolValue, true)
         XCTAssertNil(AnyCodable.number(1).boolValue)

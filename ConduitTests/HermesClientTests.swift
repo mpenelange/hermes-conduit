@@ -712,6 +712,76 @@ final class HermesClientTests: XCTestCase {
         XCTAssertNil(snapshot.pendingClarify)
     }
 
+    // MARK: - approval.respond
+
+    private func capturedApprovalRespond(
+        requestId: String?,
+        result: [String: Any]
+    ) async throws -> (request: [String: Any], response: Result<Bool, Error>) {
+        let transport = FakeTransport()
+        let socket = FakeSocket()
+        transport.nextSocket = { socket }
+        let client = makeClient(transport: transport)
+        let connectTask = Task { try? await client.connect() }
+        transport.open(socket)
+        try await awaitCompletion(of: connectTask, "connect() to complete")
+
+        let sent = Gate()
+        socket.onSend = { sent.signal() }
+        let respondTask = Task<Bool, Error> {
+            try await client.respondToApproval(
+                sessionId: "runtime-1",
+                requestId: requestId,
+                choice: "once"
+            )
+        }
+        try await sent.wait("the approval.respond request to be sent")
+        let request = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(try XCTUnwrap(socket.sentTexts.last).utf8)) as? [String: Any]
+        )
+        let id = try XCTUnwrap(request["id"] as? Int)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0", "id": id, "result": result
+        ])
+        socket.deliver(String(decoding: payload, as: UTF8.self))
+        let response: Result<Bool, Error>
+        do {
+            response = .success(try await awaitResult(of: respondTask, "the approval.respond response"))
+        } catch {
+            response = .failure(error)
+        }
+        client.disconnect()
+        return (request, response)
+    }
+
+    func testApprovalRespondValidatesResolvedCountAndKeepsLegacyOmission() async throws {
+        let zero = try await capturedApprovalRespond(requestId: "approval-2", result: ["resolved": 0])
+        let params = try XCTUnwrap(zero.request["params"] as? [String: Any])
+        XCTAssertEqual(params["request_id"] as? String, "approval-2")
+        XCTAssertEqual(try zero.response.get(), false)
+
+        let positive = try await capturedApprovalRespond(requestId: nil, result: ["resolved": 1])
+        XCTAssertNil((positive.request["params"] as? [String: Any])?["request_id"])
+        XCTAssertEqual(try positive.response.get(), true)
+
+        let legacy = try await capturedApprovalRespond(requestId: nil, result: [:])
+        XCTAssertEqual(try legacy.response.get(), true)
+    }
+
+    func testApprovalRespondRejectsMalformedResolvedValuesWithoutTrapping() async throws {
+        for malformed: Any in [-1, 1.5, 1e100, "1", NSNull()] {
+            let captured = try await capturedApprovalRespond(
+                requestId: "approval-2",
+                result: ["resolved": malformed]
+            )
+            XCTAssertThrowsError(try captured.response.get()) { error in
+                guard case HermesError.invalidResponse = error else {
+                    return XCTFail("Expected invalidResponse, got \(error)")
+                }
+            }
+        }
+    }
+
     // MARK: - session.compress
 
     func testSessionCompressTimeoutPinsDedicatedBudget() {
