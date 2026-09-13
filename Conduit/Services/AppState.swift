@@ -2754,7 +2754,11 @@ final class AppState: ObservableObject {
             // sign-in screen. A transient gateway or WebKit startup failure
             // must retain the saved dashboard session and retry.
             showLogin = false
-            scheduleReconnect(purpose: continuation.purpose)
+            if continuation.purpose == .preserveCurrent {
+                scheduleReconnect(purpose: continuation.purpose)
+            } else {
+                scheduleReconnectAfterFailedSync()
+            }
         }
     }
 
@@ -3638,6 +3642,14 @@ final class AppState: ObservableObject {
                 profile: profile,
                 purpose: purpose
             )
+            if let missingSavedSessionID {
+                chatResumeRestorationRequest = nil
+                chatResumeCoordinator.prepareDirectTarget(
+                    sessionID: missingSavedSessionID,
+                    profile: profile,
+                    purpose: purpose
+                )
+            }
             let target = missingSavedSessionID == nil
                 ? selectChatResumeTarget(
                     in: allSessions,
@@ -3697,7 +3709,7 @@ final class AppState: ObservableObject {
                    ),
                    token == reconciliationToken,
                    profile == activeProfile {
-                    scheduleReconnect(purpose: purpose)
+                    scheduleReconnectAfterFailedSync()
                 }
                 return succeeded
                     ? .completed
@@ -3782,7 +3794,11 @@ final class AppState: ObservableObject {
                            ),
                            token == reconciliationToken,
                            profile == activeProfile {
-                            scheduleReconnect(purpose: purpose)
+                            // The prior saved identity was authoritatively
+                            // deleted; do not let it masquerade as a visible
+                            // preserve-current target on the retry.
+                            activeSessionId = nil
+                            scheduleReconnectAfterFailedSync()
                         }
                         return fallbackSucceeded
                             ? .completed
@@ -3810,7 +3826,7 @@ final class AppState: ObservableObject {
                    ),
                    token == reconciliationToken,
                    profile == activeProfile {
-                    scheduleReconnect(purpose: purpose)
+                    scheduleReconnectAfterFailedSync()
                 }
                 return succeeded
                     ? .completed
@@ -3875,7 +3891,7 @@ final class AppState: ObservableObject {
                 automaticSyncOperationID: automaticOperationID
             )
             if purpose == .automaticReturn {
-                scheduleReconnect(purpose: purpose)
+                scheduleReconnectAfterFailedSync()
             }
             return .completed
         }
@@ -5639,6 +5655,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func scheduleReconnectAfterFailedSync() {
+        // Once an automatic sync fails with a visible conversation, repair
+        // around that conversation. On a truly cold launch there is no
+        // visible identity to preserve, so retain automatic return to the
+        // saved conversation instead of selecting an arbitrary catalog row.
+        let retryPurpose: ChatResumeSyncPurpose = activeSessionId == nil
+            ? .automaticReturn
+            : .preserveCurrent
+        cancelScheduledReconnect()
+        recoverySequence.complete()
+        scheduleReconnect(purpose: retryPurpose)
+    }
+
     func reconnect() async {
         cancelChatResumeTransportRecovery()
         await executeReconnect(purpose: .preserveCurrent)
@@ -5803,7 +5832,7 @@ final class AppState: ObservableObject {
                 turnState = .reconnecting
                 lastConnectionFailure = ConnectionFailureClassifier.classify(error)
                 errorMessage = AppLocalization.string("Failed to refresh the dashboard session: \(error.localizedDescription)")
-                scheduleReconnect(purpose: continuationPurpose)
+                scheduleReconnectAfterFailedSync()
             }
             return
         }
@@ -5855,7 +5884,7 @@ final class AppState: ObservableObject {
             isConnected = false
             isConnecting = false
             turnState = .reconnecting
-            scheduleReconnect(purpose: continuationPurpose)
+            scheduleReconnectAfterFailedSync()
         }
     }
 
@@ -7580,10 +7609,17 @@ final class AppState: ObservableObject {
     /// pending cards) must not survive under any of its aliases.
     func revokeDeletedConversationIdentity(sessionIDs: Set<String>, profile: String) {
         conversationIdentityIndex.removeSessionIDs(sessionIDs, profile: profile)
-        chatResumeCoordinator.removeSessions(
+        let invalidatedAutomaticRestoration = chatResumeCoordinator.removeSessions(
             profile: profile,
             sessionIDs: Array(sessionIDs)
         )
+        if invalidatedAutomaticRestoration {
+            // Deletion invalidated the coordinator's automatic-work token.
+            // Demote the parallel recovery-purpose state as well, so the
+            // resulting transport handoff cannot be upgraded back to an
+            // automatic selection by the sticky recovery sequence.
+            recoverySequence.preserveTransportAfterAutomaticIntentCancellation()
+        }
         sessionPresentationCache.removeSessions(
             profile: profile,
             sessionIDs: Array(sessionIDs)

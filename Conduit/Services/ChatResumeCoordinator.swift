@@ -111,6 +111,22 @@ final class ChatResumeCoordinator {
         return selected
     }
 
+    /// Records the same viewport-restoration ownership as `selectTarget` when
+    /// a cold catalog has not indexed the saved session yet and AppState must
+    /// resume that durable identity directly.
+    func prepareDirectTarget(
+        sessionID: String,
+        profile: String,
+        purpose: ChatResumeSyncPurpose
+    ) {
+        guard purpose == .automaticReturn else { return }
+        pendingRestoration = nil
+        let key = ChatScrollSessionKey(profile: profile, sessionID: sessionID)
+        pendingSessionKey = key.isValid ? key : nil
+        pendingFallbackSelection = false
+        if pendingSessionKey != nil { viewportIsFrozen = true }
+    }
+
     func recordViewport(_ snapshot: ChatScrollSnapshot, for key: ChatScrollSessionKey) {
         guard !viewportIsFrozen, key.isValid else { return }
 
@@ -251,7 +267,8 @@ final class ChatResumeCoordinator {
         store.clearResumeState()
     }
 
-    func removeSessions(profile: String, sessionIDs: [String]) {
+    @discardableResult
+    func removeSessions(profile: String, sessionIDs: [String]) -> Bool {
         store.removeSessions(profile: profile, sessionIDs: sessionIDs)
         // Explicit deletion revokes restoration authority in memory as well
         // as on disk: a conversation deleted while an automatic restoration
@@ -260,7 +277,7 @@ final class ChatResumeCoordinator {
         // work for any other conversation is untouched.
         let normalizedProfile = ChatScrollIdentityNormalization.profile(profile)
         let ids = Set(sessionIDs.compactMap(ChatScrollIdentityNormalization.sessionID))
-        guard let normalizedProfile, !ids.isEmpty else { return }
+        guard let normalizedProfile, !ids.isEmpty else { return false }
         var invalidated = false
         if let pendingKey = pendingSessionKey,
            pendingKey.profile == normalizedProfile,
@@ -280,7 +297,7 @@ final class ChatResumeCoordinator {
             pendingRestoration = nil
             invalidated = true
         }
-        guard invalidated else { return }
+        guard invalidated else { return false }
         // The deleted conversation can no longer own the freeze: unfreeze so
         // viewport recording resumes for whatever is selected next.
         viewportIsFrozen = false
@@ -291,6 +308,7 @@ final class ChatResumeCoordinator {
         // path never needs.
         automaticCancellationEpoch &+= 1
         if automaticCancellationEpoch == 0 { automaticCancellationEpoch = 1 }
+        return true
     }
 
     func flush() {

@@ -2582,6 +2582,98 @@ final class AppStateChatResumeTests: XCTestCase {
         )
     }
 
+    func testDeletingPendingAutomaticTargetDemotesRecoveryPurposeAndQueuedRetry() {
+        let harness = makeHarness()
+        harness.coordinator.rememberSessionID("stored-a", for: "default")
+        _ = harness.appState.beginChatResumeRecovery(purpose: .automaticReturn)
+        XCTAssertEqual(
+            harness.appState.planChatResumeReconnect(purpose: .automaticReturn),
+            .schedule(.automaticReturn)
+        )
+        _ = harness.appState.selectChatResumeTarget(
+            in: [session("stored-a")],
+            profile: "default",
+            purpose: .automaticReturn,
+            currentSessionID: nil
+        )
+
+        harness.appState.revokeDeletedConversationIdentity(
+            sessionIDs: ["stored-a"],
+            profile: "default"
+        )
+
+        XCTAssertEqual(harness.recoverySequence.currentPurpose, .preserveCurrent)
+        XCTAssertEqual(harness.recoverySequence.queuedReconnectPurpose, .preserveCurrent)
+        XCTAssertEqual(
+            harness.appState.planChatResumeReconnect(purpose: .preserveCurrent),
+            .keepExisting
+        )
+    }
+
+    func testDeletingUnrelatedSessionDoesNotDemotePendingAutomaticTarget() {
+        let harness = makeHarness()
+        harness.coordinator.rememberSessionID("stored-a", for: "default")
+        _ = harness.appState.beginChatResumeRecovery(purpose: .automaticReturn)
+        _ = harness.appState.selectChatResumeTarget(
+            in: [session("stored-a")],
+            profile: "default",
+            purpose: .automaticReturn,
+            currentSessionID: nil
+        )
+
+        harness.appState.revokeDeletedConversationIdentity(
+            sessionIDs: ["stored-b"],
+            profile: "default"
+        )
+
+        XCTAssertEqual(harness.recoverySequence.currentPurpose, .automaticReturn)
+    }
+
+    func testDeletingTargetDuringSuspendedAutomaticResumeHandsOffFutureRecovery() async {
+        let gate = ControlledSuspension()
+        var requests: [String] = []
+        let harness = makeHarness(lifecycleOperations: ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in [self.session("stored-a"), self.session("stored-b")] },
+            openSession: { _, sessionID, _ in
+                requests.append(sessionID)
+                await gate.suspend()
+                return SessionResumeResult(
+                    sessionId: sessionID,
+                    storedSessionId: sessionID,
+                    messages: [],
+                    snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                )
+            },
+            refreshContext: { _, _ in }
+        ))
+        installComposerClient(in: harness)
+        harness.coordinator.rememberSessionID("stored-a", for: "default")
+
+        let sync = Task { @MainActor in
+            await harness.appState.syncSession(
+                purpose: .automaticReturn,
+                using: nil,
+                automaticWorkToken: nil
+            )
+        }
+        await gate.waitUntilSuspended()
+        harness.appState.revokeDeletedConversationIdentity(
+            sessionIDs: ["stored-a"],
+            profile: "default"
+        )
+        gate.resume()
+        await sync.value
+
+        XCTAssertEqual(requests, ["stored-a"])
+        XCTAssertNil(harness.appState.activeSessionId)
+        XCTAssertEqual(harness.recoverySequence.currentPurpose, .preserveCurrent)
+        XCTAssertEqual(
+            harness.appState.beginChatResumeRecovery(purpose: .preserveCurrent),
+            .preserveCurrent,
+            "Deletion must not leave a sticky automatic purpose that upgrades later recovery"
+        )
+    }
+
     func testAdmittedResumeRebindsStaleIndexMappingToSelectedConversation() async {
         // The exact split-brain repro: the index holds a historical
         // runtime-x → stored-b mapping, the catalog temporarily omits
@@ -3209,6 +3301,7 @@ final class AppStateChatResumeTests: XCTestCase {
             baseUrl: "https://one.example",
             ticket: "saved-ticket"
         )
+        harness.appState.activeSessionId = "stored-visible"
 
         let reconnect = Task { @MainActor in
             await harness.appState.reconnectForRetry(purpose: .automaticReturn)
@@ -3228,6 +3321,57 @@ final class AppStateChatResumeTests: XCTestCase {
         await scheduler.runAll()
         XCTAssertEqual(scheduler.cancelledCount, 0)
         XCTAssertEqual(reconnectSpy.purposes, [.preserveCurrent])
+    }
+
+    func testFailedAutomaticReconnectRetriesWithoutStickyAutomaticSelection() async {
+        let scheduler = ControlledReconnectScheduler()
+        let reconnectSpy = ReconnectExecutionSpy()
+        let harness = makeHarness(
+            reconnectScheduler: scheduler.schedule(after:operation:),
+            reconnectExecutor: { purpose in reconnectSpy.purposes.append(purpose) },
+            lifecycleOperations: ChatResumeLifecycleOperations(
+                connectClient: { _ in throw ControlledLifecycleError.failed },
+                mintTicket: { _ in "refreshed-ticket" }
+            )
+        )
+        harness.appState.connection = HermesConnection(
+            baseUrl: "https://one.example",
+            ticket: "saved-ticket"
+        )
+        let visible = session("stored-visible")
+        harness.appState.sessions = [visible]
+        harness.appState.activeSessionId = visible.id
+
+        await harness.appState.reconnectForRetry(purpose: .automaticReturn)
+        await scheduler.runAll()
+
+        XCTAssertEqual(reconnectSpy.purposes, [.preserveCurrent])
+        XCTAssertEqual(harness.recoverySequence.currentPurpose, .preserveCurrent)
+        XCTAssertEqual(harness.appState.activeSessionId, visible.id)
+    }
+
+    func testFailedColdAutomaticReconnectRetainsSavedSessionPurpose() async {
+        let scheduler = ControlledReconnectScheduler()
+        let reconnectSpy = ReconnectExecutionSpy()
+        let harness = makeHarness(
+            reconnectScheduler: scheduler.schedule(after:operation:),
+            reconnectExecutor: { purpose in reconnectSpy.purposes.append(purpose) },
+            lifecycleOperations: ChatResumeLifecycleOperations(
+                connectClient: { _ in throw ControlledLifecycleError.failed },
+                mintTicket: { _ in "refreshed-ticket" }
+            )
+        )
+        harness.coordinator.rememberSessionID("stored-saved", for: "default")
+        harness.appState.connection = HermesConnection(
+            baseUrl: "https://one.example",
+            ticket: "saved-ticket"
+        )
+
+        await harness.appState.reconnectForRetry(purpose: .automaticReturn)
+        await scheduler.runAll()
+
+        XCTAssertEqual(reconnectSpy.purposes, [.automaticReturn])
+        XCTAssertEqual(harness.recoverySequence.currentPurpose, .automaticReturn)
     }
 
     func testViewportCancellationDuringInitialConnectHandsOffToPreserveCurrentSynchronization() async {
@@ -4152,6 +4296,42 @@ final class AppStateChatResumeTests: XCTestCase {
         XCTAssertNil(harness.appState.activeSessionId)
         XCTAssertTrue(harness.appState.sessions.isEmpty)
         XCTAssertEqual(harness.cacheClearSpy.count, 1)
+    }
+
+    func testMissingSavedSessionDirectSyncRestoresSavedViewport() async throws {
+        var requests: [String] = []
+        let harness = makeHarness(lifecycleOperations: ChatResumeLifecycleOperations(
+            loadCatalog: { _, _ in [] },
+            openSession: { _, sessionID, _ in
+                requests.append(sessionID)
+                return SessionResumeResult(
+                    sessionId: sessionID,
+                    storedSessionId: sessionID,
+                    messages: [],
+                    snapshot: SessionRuntimeSnapshot(object: ["running": .bool(false)])
+                )
+            },
+            refreshContext: { _, _ in }
+        ))
+        let key = ChatScrollSessionKey(profile: "default", sessionID: "stored-missing")
+        let saved = ChatScrollSnapshot(anchorMessageID: "saved-anchor", followsLatest: false)
+        harness.coordinator.rememberSessionID("stored-missing", for: "default")
+        harness.coordinator.recordViewport(saved, for: key)
+        harness.coordinator.flush()
+        installComposerClient(in: harness)
+
+        await harness.appState.syncSession(
+            purpose: .automaticReturn,
+            using: nil,
+            automaticWorkToken: nil
+        )
+
+        XCTAssertEqual(requests, ["stored-missing"])
+        XCTAssertEqual(
+            try XCTUnwrap(harness.appState.chatResumeRestorationRequest).destination,
+            .snapshot(saved)
+        )
+        XCTAssertEqual(harness.store.snapshot(for: key), saved)
     }
 
     func testLegacySameServerLoginOrderingPreservesServerScopedState() throws {
