@@ -1218,6 +1218,18 @@ final class AppState: ObservableObject {
         return [durableSessionID]
     }
 
+    private func presentationCacheSessionIDs(for sessionID: String) -> [String] {
+        Self.durableOwnedPresentationIDs(
+            [
+                sessionID,
+                activeSessionId,
+                reconciliation?.requestedSessionId,
+                reconciliation?.resolvedSessionId
+            ].compactMap { $0 },
+            durableSessionID: activeChatScrollSessionIdentity.canonicalSessionID
+        )
+    }
+
     /// Hermes can omit UI-only fields from persisted history. Retain a bounded
     /// local record so a reload does not drop a timestamp or tool preview.
     private func cacheMessagePresentation(for sessionIDs: [String] = []) {
