@@ -3272,15 +3272,29 @@ final class AppStateChatResumeTests: XCTestCase {
 
     func testBehaviorChangeDuringReconnectHandsOffToOnePreserveCurrentRetry() async {
         let connectGate = ControlledSuspension()
+        let connectEntered = expectation(description: "Reconnect entered connectClient")
+        var didEnterConnect = false
+        let dashboardID = UUID()
+        let dashboardRegistry = SavedDashboardRegistry(
+            activeDashboardID: dashboardID,
+            dashboards: [SavedDashboard(
+                id: dashboardID,
+                label: "One",
+                normalizedURL: "https://one.example"
+            )]
+        )
         let scheduler = ControlledReconnectScheduler()
         let reconnectSpy = ReconnectExecutionSpy()
         let harness = makeHarness(
+            dashboardRegistry: dashboardRegistry,
             reconnectScheduler: scheduler.schedule(after:operation:),
             reconnectExecutor: { purpose in
                 reconnectSpy.purposes.append(purpose)
             },
             lifecycleOperations: ChatResumeLifecycleOperations(
                 connectClient: { _ in
+                    didEnterConnect = true
+                    connectEntered.fulfill()
                     await connectGate.suspend()
                     throw ControlledLifecycleError.failed
                 },
@@ -3296,7 +3310,12 @@ final class AppStateChatResumeTests: XCTestCase {
         let reconnect = Task { @MainActor in
             await harness.appState.reconnectForRetry(purpose: .automaticReturn)
         }
-        await connectGate.waitUntilSuspended()
+        await fulfillment(of: [connectEntered], timeout: 2.0)
+        guard didEnterConnect else {
+            connectGate.resume()
+            reconnect.cancel()
+            return
+        }
         XCTAssertTrue(harness.appState.isConnecting)
         XCTAssertEqual(harness.appState.turnState, .reconnecting)
 
@@ -5596,6 +5615,7 @@ final class AppStateChatResumeTests: XCTestCase {
     private func makeHarness(
         behavior: ChatResumeBehavior = .continueWhereLeftOff,
         configureDefaults: (UserDefaults) -> Void = { _ in },
+        dashboardRegistry: SavedDashboardRegistry = SavedDashboardRegistry(),
         reconnectScheduler: ChatResumeReconnectScheduler? = nil,
         reconnectExecutor: ChatResumeReconnectExecutor? = nil,
         lifecycleOperations: ChatResumeLifecycleOperations = .live,
@@ -5629,6 +5649,7 @@ final class AppStateChatResumeTests: XCTestCase {
             chatResumeCoordinator: coordinator,
             recoverySequence: recoverySequence,
             loadSavedConnection: false,
+            dashboardRegistry: dashboardRegistry,
             clearSessionPresentationCache: { cacheClearSpy.count += 1 },
             reconnectScheduler: reconnectScheduler,
             reconnectExecutor: reconnectExecutor,
