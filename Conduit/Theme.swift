@@ -513,8 +513,11 @@ struct ConduitBackdrop: View {
                     paused: !shouldAnimate
                 )
             ) { _ in
+                // Read here, not inside the GeometryReader: its content runs
+                // again only when something it captured changes, so a clock
+                // read in there was read once and the glows never moved.
+                let drift = motionClock.progress(at: ProcessInfo.processInfo.systemUptime)
                 GeometryReader { proxy in
-                    let drift = motionClock.progress(at: ProcessInfo.processInfo.systemUptime)
                     ZStack {
                         ConduitGlow(
                             // On the light base a dark-mode-strength glow
