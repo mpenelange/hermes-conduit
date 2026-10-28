@@ -123,7 +123,10 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
             },
             scrollView.observe(\.contentOffset, options: [.old, .new]) { [weak self] _, change in
                 guard change.oldValue != change.newValue else { return }
-                Self.onMain { self?.engine?.surfaceScrolled() }
+                Self.onMain {
+                    self?.engine?.surfaceScrolled()
+                    self?.clearScrollingIfResting()
+                }
             },
         ]
         scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
@@ -146,6 +149,7 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
     }
 
     func invalidate() {
+        InteractionIdleState.shared.setScrolling(false)
         observations.forEach { $0.invalidate() }
         observations = []
         scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(handlePan(_:)))
@@ -155,11 +159,28 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
         switch recognizer.state {
         case .began:
+            InteractionIdleState.shared.setScrolling(true)
             engine?.userDragBegan()
         case .ended, .cancelled, .failed:
             engine?.userDragEnded()
+            if scrollView?.isDecelerating != true {
+                InteractionIdleState.shared.setScrolling(false)
+            }
         default:
             break
+        }
+    }
+
+    private func clearScrollingIfResting() {
+        guard InteractionIdleState.shared.isScrolling,
+              let scrollView,
+              !scrollView.isTracking,
+              !scrollView.isDecelerating else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let scrollView = self?.scrollView,
+                  !scrollView.isTracking,
+                  !scrollView.isDecelerating else { return }
+            InteractionIdleState.shared.setScrolling(false)
         }
     }
 

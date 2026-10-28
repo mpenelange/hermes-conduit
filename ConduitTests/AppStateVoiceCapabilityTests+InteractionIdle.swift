@@ -143,6 +143,23 @@ extension AppStateVoiceCapabilityTests {
         h.clock.advance(by: 1)
         XCTAssertTrue(state.isIdle)
     }
+
+    func testIdleBackdropScrollingPublishesOnlyOnEdges() {
+        let h = IdleHarness()
+        let state = h.state
+        var scrollingFlips: [Bool] = []
+        let sub = state.$isScrolling.dropFirst().sink { scrollingFlips.append($0) }
+        defer { sub.cancel() }
+
+        XCTAssertFalse(state.isScrolling)
+        state.setScrolling(true)
+        state.setScrolling(true)
+        XCTAssertTrue(state.isScrolling)
+        state.setScrolling(false)
+        state.setScrolling(false)
+        XCTAssertFalse(state.isScrolling)
+        XCTAssertEqual(scrollingFlips, [true, false])
+    }
 }
 
 /// A fake clock and one-shot timer queue standing in for the run loop, and an
