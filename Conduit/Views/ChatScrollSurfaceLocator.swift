@@ -99,6 +99,7 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
     private weak var engine: ChatScrollEngine?
     private var observations: [NSKeyValueObservation] = []
     private var lastAdjustedInsets: UIEdgeInsets
+    private var cachedTranscriptOriginY: CGFloat?
 
     init(scrollView: UIScrollView, locator: UIView, engine: ChatScrollEngine) {
         self.scrollView = scrollView
@@ -109,17 +110,26 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
         observations = [
             scrollView.observe(\.contentSize, options: [.old, .new]) { [weak self] _, change in
                 guard change.oldValue != change.newValue else { return }
-                Self.onMain { self?.engine?.surfaceLayoutChanged() }
+                Self.onMain {
+                    self?.cachedTranscriptOriginY = nil
+                    self?.engine?.surfaceLayoutChanged()
+                }
             },
             scrollView.observe(\.bounds, options: [.old, .new]) { [weak self] _, change in
                 // Bounds origin is the content offset; only a size change is
                 // a layout change (keyboard, rotation, split view).
                 guard change.oldValue?.size != change.newValue?.size else { return }
-                Self.onMain { self?.engine?.surfaceLayoutChanged() }
+                Self.onMain {
+                    self?.cachedTranscriptOriginY = nil
+                    self?.engine?.surfaceLayoutChanged()
+                }
             },
             scrollView.observe(\.contentInset, options: [.old, .new]) { [weak self] _, change in
                 guard change.oldValue != change.newValue else { return }
-                Self.onMain { self?.engine?.surfaceLayoutChanged() }
+                Self.onMain {
+                    self?.cachedTranscriptOriginY = nil
+                    self?.engine?.surfaceLayoutChanged()
+                }
             },
             scrollView.observe(\.contentOffset, options: [.old, .new]) { [weak self] _, change in
                 guard change.oldValue != change.newValue else { return }
@@ -140,12 +150,14 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
     }
 
     func checkAdjustedInsets() {
+        cachedTranscriptOriginY = nil
         guard let scrollView, scrollView.adjustedContentInset != lastAdjustedInsets else { return }
         lastAdjustedInsets = scrollView.adjustedContentInset
         engine?.surfaceLayoutChanged()
     }
 
     func invalidate() {
+        cachedTranscriptOriginY = nil
         observations.forEach { $0.invalidate() }
         observations = []
         scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(handlePan(_:)))
@@ -174,8 +186,13 @@ final class UIScrollViewChatSurface: NSObject, ChatScrollSurface {
     var isDecelerating: Bool { scrollView?.isDecelerating ?? false }
 
     var transcriptOriginY: CGFloat {
+        if let cached = cachedTranscriptOriginY {
+            return cached
+        }
         guard let scrollView, let locator else { return 0 }
-        return locator.convert(CGPoint.zero, to: scrollView).y
+        let value = locator.convert(CGPoint.zero, to: scrollView).y
+        cachedTranscriptOriginY = value
+        return value
     }
 
     func setContentOffsetY(_ y: CGFloat, animated: Bool) {
