@@ -303,6 +303,33 @@ final class SettledMessageIsolationTests: XCTestCase {
         )
     }
 
+    func testChatRowStateCachesTranscriptScansAcrossNonTranscriptPublishes() throws {
+        let appState = try makeAppState()
+        appState.messages = [
+            ChatMessage(id: "u1", role: .user, content: "Hello", timestamp: "2026-01-01T00:00:00Z"),
+            markdownMessage(id: "a1")
+        ]
+        let cache = LastChatRowState()
+        let first = ChatRowState(appState, cache: cache)
+        XCTAssertEqual(first.latestAssistantMessageID, "a1")
+        XCTAssertEqual(first.retryableReplyID, "a1")
+        let initialScan = try XCTUnwrap(cache.transcriptScanCache)
+
+        // A non-transcript publish reuses the cached transcript scan.
+        appState.composerNotice = "Reconnecting"
+        let second = ChatRowState(appState, cache: cache)
+        XCTAssertEqual(second.latestAssistantMessageID, "a1")
+        XCTAssertEqual(second.retryableReplyID, "a1")
+        XCTAssertEqual(cache.transcriptScanCache, initialScan)
+
+        // Appending a reply bumps chatTranscriptRevision and refreshes the scan.
+        appState.messages.append(markdownMessage(id: "a2"))
+        let third = ChatRowState(appState, cache: cache)
+        XCTAssertEqual(third.latestAssistantMessageID, "a2")
+        XCTAssertEqual(third.retryableReplyID, "a2")
+        XCTAssertNotEqual(cache.transcriptScanCache, initialScan)
+    }
+
     /// Redraws on every publish and rebuilds its rows, as ChatView's
     /// transcript does.
     private struct TranscriptParent: View {
