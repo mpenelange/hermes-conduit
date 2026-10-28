@@ -545,6 +545,16 @@ final class AppStateVoiceCapabilityTests: XCTestCase {
                 thermalState: thermalState
             ))
         }
+
+        XCTAssertFalse(ConduitBackdropMotionPolicy.shouldAnimate(
+            drifts: true,
+            sceneIsActive: true,
+            reduceMotion: false,
+            lowPowerMode: false,
+            idle: false,
+            scrolling: true,
+            thermalState: .nominal
+        ))
     }
 
     func testBackdropDriftIsBoundedAndRepeatsAfterOneOutAndBackCycle() {

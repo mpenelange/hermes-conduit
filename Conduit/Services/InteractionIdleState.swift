@@ -27,6 +27,7 @@ final class InteractionIdleState: ObservableObject {
     typealias Schedule = (_ delay: TimeInterval, _ fire: @escaping @MainActor () -> Void) -> () -> Void
 
     @Published private(set) var isIdle = false
+    @Published private(set) var isScrolling = false
 
     private let idleAfter: TimeInterval
     private let now: () -> TimeInterval
@@ -101,6 +102,13 @@ final class InteractionIdleState: ObservableObject {
     /// queued message sending itself after a turn is nobody.
     func usedWithin(_ seconds: TimeInterval) -> Bool {
         now() - lastUse <= seconds
+    }
+
+    /// Holds the drifting backdrop still while the transcript scrolls, so its
+    /// 10 fps redraws don't compete with scroll frames.
+    func setScrolling(_ scrolling: Bool) {
+        guard scrolling != isScrolling else { return }
+        isScrolling = scrolling
     }
 
     /// AppState reports turn edges here, so nothing has to observe AppState

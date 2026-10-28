@@ -405,10 +405,11 @@ enum ConduitBackdropMotionPolicy {
         reduceMotion: Bool,
         lowPowerMode: Bool,
         idle: Bool,
+        scrolling: Bool = false,
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
         let thermalStateAllowsMotion = thermalState == .nominal || thermalState == .fair
-        return drifts && sceneIsActive && !reduceMotion && !lowPowerMode && !idle && thermalStateAllowsMotion
+        return drifts && sceneIsActive && !reduceMotion && !lowPowerMode && !idle && !scrolling && thermalStateAllowsMotion
     }
 
     /// One smooth out-and-back drift over 26 seconds, matching the previous
@@ -491,6 +492,7 @@ struct ConduitBackdrop: View {
             reduceMotion: reduceMotion,
             lowPowerMode: devicePower.isLowPowerModeEnabled,
             idle: interactionIdle.isIdle,
+            scrolling: interactionIdle.isScrolling,
             thermalState: devicePower.thermalState
         )
     }
