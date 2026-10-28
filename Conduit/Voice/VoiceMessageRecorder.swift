@@ -528,6 +528,7 @@ enum VoiceMessage {
 
     /// A sent voice message's parts, or nil for any other message.
     static func parse(_ text: String) -> (duration: String, transcript: String)? {
+        guard text.hasPrefix("[Voice message, ") else { return nil }
         guard let match = text.firstMatch(of: #/^\[Voice message, (\d+:\d{2}(?::\d{2})?)(?:\.[^\]\n]*)?\][ \t]*(?:\r?\n|$)/#) else {
             return nil
         }
