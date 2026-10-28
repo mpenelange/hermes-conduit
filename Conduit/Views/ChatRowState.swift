@@ -58,28 +58,61 @@ struct ChatRowState: Equatable {
     init() {}
 
     @MainActor
-    init(_ appState: AppState) {
+    init(_ appState: AppState, cache: LastChatRowState? = nil) {
         let profile = appState.activeProfile
         activeProfile = profile
         agentIdentity = appState.conversationAgentIdentity
         agentGlowTint = appState.profileGlowTint(appState.conversationIdentityProfile)
-        isBusy = appState.isBusy
+        let busy = appState.isBusy
+        isBusy = busy
         isBranchingChat = appState.isBranchingChat
         isOffline = appState.offlineChatPresentation != nil
         canQuoteIntoComposer = appState.canQuoteIntoComposer()
         reactionsAvailable = appState.reactionsAvailable
-        latestAssistantMessageID = appState.messages.last(where: { $0.role == .assistant })?.id
-        retryableReplyID = AppState.retryableReplyID(in: appState.messages)
+
+        let sessionID = appState.activeSessionId
+        let transcriptRevision = appState.chatTranscriptRevision
+        let messageCount = appState.messages.count
+
+        if let cached = cache?.transcriptScanCache,
+           cached.sessionID == sessionID,
+           cached.transcriptRevision == transcriptRevision,
+           cached.messageCount == messageCount,
+           cached.isBusy == busy {
+            latestAssistantMessageID = cached.latestAssistantMessageID
+            retryableReplyID = cached.retryableReplyID
+            latestLiveRows = cached.latestLiveRows
+            teammateReplies = cached.teammateReplies
+        } else {
+            let latestAssistant = appState.messages.last(where: { $0.role == .assistant })?.id
+            let retryable = AppState.retryableReplyID(in: appState.messages)
+            let liveRows = RichCard.latestLiveRows(appState.messages)
+            let replies = BotTeammateMessages.teammateReplies(
+                in: appState.messages,
+                streamingMessageID: busy ? BotTeammateMessages.runningReplyID(in: appState.messages) : nil
+            )
+            latestAssistantMessageID = latestAssistant
+            retryableReplyID = retryable
+            latestLiveRows = liveRows
+            teammateReplies = replies
+
+            cache?.transcriptScanCache = LastChatRowState.TranscriptScanCache(
+                sessionID: sessionID,
+                transcriptRevision: transcriptRevision,
+                messageCount: messageCount,
+                isBusy: busy,
+                latestAssistantMessageID: latestAssistant,
+                retryableReplyID: retryable,
+                latestLiveRows: liveRows,
+                teammateReplies: replies
+            )
+        }
+
         readAloudUnavailable = appState.readAloudUnavailableReason != nil
         displayPreferences = appState.displayPreferences
         voiceCallLinksRevision = appState.voiceCallChatLinksRevision
-        latestLiveRows = RichCard.latestLiveRows(appState.messages)
         canPinReplies = appState.canPinReplies
         pinnedMessageIDs = appState.openChatPinnedMessageIDs
-        teammateReplies = BotTeammateMessages.teammateReplies(
-            in: appState.messages,
-            streamingMessageID: appState.isBusy ? BotTeammateMessages.runningReplyID(in: appState.messages) : nil
-        )
         botLabels = appState.botRoster.map { "\($0.name)=\($0.displayLabel)" }
         toolCatalog = appState.toolCatalog
         let scope = appState.toolCatalogKey
@@ -155,15 +188,30 @@ private struct ChatRowsEnvironment: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .environment(\.chatRowState, last.keeping(ChatRowState(appState)))
+            .environment(\.chatRowState, last.keeping(ChatRowState(appState, cache: last)))
             .environment(\.chatRowActions, ChatRowActions(appState: appState))
     }
 }
 
 /// The last state handed down, kept while equal: the same instance, URL
 /// and color storage included, compares unchanged however SwiftUI checks.
+/// Also caches the transcript scans (`latestAssistantMessageID`,
+/// `retryableReplyID`, `latestLiveRows`, `teammateReplies`) across
+/// non-transcript publishes.
 @MainActor
-private final class LastChatRowState {
+final class LastChatRowState {
+    struct TranscriptScanCache: Equatable {
+        let sessionID: String?
+        let transcriptRevision: UInt64
+        let messageCount: Int
+        let isBusy: Bool
+        let latestAssistantMessageID: String?
+        let retryableReplyID: String?
+        let latestLiveRows: [String: String]
+        let teammateReplies: [String: String]
+    }
+
+    var transcriptScanCache: TranscriptScanCache?
     private var value: ChatRowState?
 
     func keeping(_ next: ChatRowState) -> ChatRowState {
